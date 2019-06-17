@@ -1,0 +1,27 @@
+{
+  "name": "purescript-search-trie",
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/klntsky/purescript-search-trie.git"
+  },
+  "ignore": [
+    "**/.*",
+    "node_modules",
+    "bower_components",
+    "output"
+  ],
+  "dependencies": {
+    "purescript-prelude": "^4.0.0",
+    "purescript-arrays": "^5.0.0",
+    "purescript-ordered-collections": "^1.0.0",
+    "purescript-lists": "^5.2.0",
+    "purescript-foldable-traversable": "^4.0.0"
+  },
+  "devDependencies": {
+    "purescript-assert": "^4.1.0",
+    "purescript-psci-support": "^4.0.0",
+    "purescript-strings": "^4.0.0",
+    "purescript-effect": "^2.0.0"
+  }
+}

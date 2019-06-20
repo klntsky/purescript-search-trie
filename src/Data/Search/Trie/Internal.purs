@@ -2,12 +2,17 @@ module Data.Search.Trie.Internal
        ( Trie(..)
        , Ctx(..)
        , Zipper(..)
+       , alter
+       , delete
        , fromFoldable
+       , fromZipper
        , insert
-       , insert'
        , isEmpty
        , lookup
+       , mkZipper
+       , prune
        , query
+       , query'
        , size
        , subtrie
        , toUnfoldable
@@ -17,6 +22,7 @@ where
 
 import Prelude
 
+import Data.Array as A
 import Data.Foldable (class Foldable, foldl)
 import Data.List (List(..), (:))
 import Data.List as L
@@ -27,7 +33,6 @@ import Data.Maybe as MB
 import Data.Tuple (Tuple(..), snd)
 import Data.Tuple.Nested (over1)
 import Data.Unfoldable (class Unfoldable, fromMaybe)
-import Data.Array as A
 
 data Trie k v =
   Branch (Maybe v) (Map k (Trie k v))
@@ -65,75 +70,125 @@ data Ctx k v = BranchCtx (Maybe v) k (Map k (Trie k v))
 
 data Zipper k v = Zipper (Trie k v) (List (Ctx k v))
 
+-- | Delete everything until the first non-empty `Ctx`.
+prune :: forall k v. Ord k => List (Ctx k v) -> Zipper k v
+prune ctxs =
+  case ctxs of
+    Nil -> mkZipper mempty
+    BranchCtx mbValue key children : rest ->
+      let newChildren = M.delete key children in
+      if MB.isJust mbValue || not (M.isEmpty newChildren)
+      then Zipper (Branch mbValue newChildren) rest
+      else prune rest
+    ArcCtx len path : rest ->
+      prune rest
+
 fromZipper :: forall k v. Ord k => Zipper k v -> Trie k v
 fromZipper (Zipper trie Nil) = trie
 fromZipper (Zipper trie (Cons x ctx)) =
   case x, trie of
     BranchCtx mbValue key other, _ ->
       fromZipper (Zipper (Branch mbValue $ M.insert key trie other) ctx)
+
     ArcCtx len path,             Arc len' path' child ->
       fromZipper (Zipper (Arc (len + len') (path <> path') child) ctx)
+
     ArcCtx len path,             _ ->
       fromZipper (Zipper (Arc len path trie) ctx)
 
-insert :: forall k v. Ord k => List k -> v -> Trie k v -> Trie k v
-insert path value trie = fromZipper (insert' path value (Zipper trie Nil))
+mkZipper :: forall k v. Trie k v -> Zipper k v
+mkZipper trie = Zipper trie Nil
 
-insert' :: forall k v. Ord k => List k -> v -> Zipper k v -> Zipper k v
-insert' Nil  value (Zipper (Branch mbValue children) ctx) =
-  Zipper (Branch (Just value) children) ctx
-insert' (head : tail) value (Zipper (Branch mbOldValue children) ctx) =
-  case M.lookup head children of
-    Just child ->
-      insert' tail value $
-      Zipper child
-             (BranchCtx mbOldValue head children : ctx)
-    Nothing ->
-      Zipper (mkArc tail $ Branch (Just value) mempty)
-             (BranchCtx mbOldValue head children : ctx)
-insert' path value (Zipper (Arc len arc child) ctx) =
-  let prefixLength = longestCommonPrefixLength path arc in
-  if prefixLength == len
-  then
-    let newPath = L.drop prefixLength path in
-    insert' newPath value $
-    Zipper child $
-    ArcCtx len arc : ctx
-  else
-    if prefixLength == 0 then
-      -- Replace `Arc` with a `Branch`.
-      case L.uncons arc of
-        Just { head, tail } ->
-          -- We want to avoid `L.length` call on `tail`: at this point
-          -- the length can be calculated.
-          let len' = len - 1
-              children = M.singleton head $
-                         if len' > 0
-                         then Arc len' tail child
-                         else child
-          in
-            insert' path value $
-            Zipper (Branch Nothing children) ctx
+withZipper :: forall k v. Ord k => (Zipper k v -> Zipper k v) -> Trie k v -> Trie k v
+withZipper f trie = fromZipper (f (mkZipper trie))
+
+insert :: forall k v. Ord k => List k -> v -> Trie k v -> Trie k v
+insert path value =
+  withZipper (alter' path (const (Just value)))
+
+delete :: forall k v. Ord k => List k -> Trie k v -> Trie k v
+delete path trie =
+  case lookup path trie of
+    Just _ -> withZipper (alter' path (const Nothing)) trie
+    _      -> trie
+
+alter :: forall k v. Ord k => List k -> (Maybe v -> Maybe v) -> Trie k v -> Trie k v
+alter path update =
+  withZipper (alter' path update)
+
+alter' :: forall k v. Ord k => List k -> (Maybe v -> Maybe v) -> Zipper k v -> Zipper k v
+alter' path' update originalZipper = go path' originalZipper
+  where
+    go Nil (Zipper (Branch mbValue children) ctx) =
+      let updatedValue = update mbValue
+          wasDeleted = MB.isJust mbValue &&
+                       MB.isNothing updatedValue &&
+                       M.isEmpty children
+      in if wasDeleted
+         then
+           -- Remove unused branches and arcs from the tree.
+           -- They can only appear when `wasDeleted` is true.
+           prune ctx
+         else Zipper (Branch updatedValue children) ctx
+    go (head : tail) (Zipper (Branch mbOldValue children) ctx) =
+      case M.lookup head children of
+        Just child ->
+          go tail $
+          Zipper child
+                 (BranchCtx mbOldValue head children : ctx)
         Nothing ->
-          Zipper empty ctx -- impossible: `arc` is always non-empty
-    else
-      let
-        outerArc = L.take prefixLength path
-        newPath  = L.drop prefixLength path
-        -- `innerArc` is always non-empty, because
-        -- `prefixLength == L.length arc` is false in this branch.
-        -- `prefixLength <= L.length arc` is true because `prefixLength` is
-        -- a length of some prefix of `arc`.
-        -- Thus `prefixLength < L.length arc`.
-        innerArc = L.drop prefixLength arc
-        innerArcLength = len - prefixLength
-        outerArcLength = L.length outerArc
-      in
-        insert' newPath value $
-        Zipper (Arc innerArcLength innerArc child)
-        if outerArcLength == 0
-        then ctx
-        else ArcCtx outerArcLength outerArc : ctx
+          let updatedValue = update Nothing
+              wasAdded     = MB.isJust updatedValue
+          in if wasAdded
+             then Zipper (mkArc tail $ Branch updatedValue mempty)
+                         (BranchCtx mbOldValue head children : ctx)
+             else
+               -- Cancel everything we did to the tree, since we did not insert
+               -- the value.
+               originalZipper
+    go path (Zipper (Arc len arc child) ctx) =
+      let prefixLength = longestCommonPrefixLength path arc in
+      if prefixLength == len
+      then
+        let newPath = L.drop prefixLength path in
+        go newPath $
+        Zipper child $
+        ArcCtx len arc : ctx
+      else
+        if prefixLength == 0 then
+          -- Replace `Arc` with a `Branch`.
+          case L.uncons arc of
+            Just { head, tail } ->
+              -- We want to avoid `L.length` call on `tail`: at this point
+              -- the length can be calculated.
+              let len' = len - 1
+                  children = M.singleton head $
+                             if len' > 0
+                             then Arc len' tail child
+                             else child
+              in
+                go path $
+                Zipper (Branch Nothing children) ctx
+            Nothing ->
+              Zipper empty ctx -- impossible: `arc` is always non-empty
+        else
+          let
+            outerArc = L.take prefixLength path
+            newPath  = L.drop prefixLength path
+            -- `innerArc` is always non-empty, because
+            -- `prefixLength == L.length arc` is false in this branch.
+            -- `prefixLength <= L.length arc` is true because `prefixLength` is
+            -- a length of some prefix of `arc`.
+            -- Thus `prefixLength < L.length arc`.
+            innerArc = L.drop prefixLength arc
+            innerArcLength = len - prefixLength
+            outerArcLength = L.length outerArc
+          in
+            go newPath $
+            Zipper (Arc innerArcLength innerArc child)
+            if outerArcLength == 0
+            then ctx
+            else ArcCtx outerArcLength outerArc : ctx
 
 -- | A smart constructor to ensure Arc non-emptiness.
 mkArc :: forall k v. List k -> Trie k v -> Trie k v
@@ -192,11 +247,21 @@ query
   => Functor l
   => Unfoldable l
   => Unfoldable p
-  => Trie k v
-  -> List k
+  => Foldable p
+  => p k
+  -> Trie k v
   -> l (Tuple (p k) v)
-query trie path =
-  toUnfoldable $ MB.fromMaybe empty $ subtrie path trie
+query path trie =
+  toUnfoldable $ MB.fromMaybe empty $ subtrie (L.fromFoldable path) trie
+
+query'
+  :: forall k v
+  .  Ord k
+  => List k
+  -> Trie k v
+  -> List (Tuple (List k) v)
+query' path trie =
+  toUnfoldable' $ MB.fromMaybe empty $ subtrie path trie
 
 longestCommonPrefixLength :: forall a. Eq a => List a -> List a -> Int
 longestCommonPrefixLength = go 0

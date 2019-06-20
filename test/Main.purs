@@ -3,14 +3,15 @@ module Test.Main where
 import Prelude
 
 import Data.Array (sort)
+import Data.Array as A
 import Data.List as L
 import Data.Map as M
 import Data.Maybe (Maybe(..))
-import Data.Search.Trie (fromFoldable, insert, isEmpty, lookup, subtrie, size, toUnfoldable)
+import Data.Search.Trie (fromFoldable, insert, isEmpty, lookup, query, subtrie, size, toUnfoldable, delete)
 import Data.Search.Trie.Internal (Trie(..))
 import Data.String.CodeUnits (fromCharArray, toCharArray)
 import Data.Traversable (class Foldable, for_)
-import Data.Tuple (Tuple(..), fst)
+import Data.Tuple (Tuple(..), fst, snd)
 import Effect (Effect)
 import Test.Assert (assertEqual')
 
@@ -21,6 +22,8 @@ main = do
   testInsert
   testSubtrie
   testGiantTrie
+  testQuery
+  testDelete
 
 testIsEmpty :: Effect Unit
 testIsEmpty = do
@@ -171,6 +174,168 @@ testGiantTrie = do
   assertEqual' "giantTrie" { expected: sort $ map fromCharArray giantArray
                            , actual: sort $ map fromCharArray allKeys
                            }
+
+testQuery :: Effect Unit
+testQuery = do
+  let els = toCharArray <$>
+            [ "aaa"
+            , "aaaa"
+            , "aaab"
+            , "aaaaaaaaaaaa"
+            , "aabaaaaa"
+            , "bbbbaaaa"
+            ]
+
+  assertEqual' "query #0"
+    { expected: A.sort
+      [ "aaa"
+      , "aaaa"
+      , "aaab"
+      , "aaaaaaaaaaaa"
+      ]
+    , actual:
+      map snd $
+      query (toCharArray "aaa") $
+      fromFoldable $
+      (\x -> Tuple x $ fromCharArray x) <$> els
+    }
+
+testDelete :: Effect Unit
+testDelete = do
+
+  let els = toCharArray <$>
+            [ "aaa"
+            , "aaaa"
+            , "aaab"
+            , "aaaaaaaaaaaa"
+            , "aabaaaaa"
+            , "bbbbaaaa"
+            ]
+
+  let trie0 :: Trie Char String
+      trie0 =
+        fromFoldable $
+          (\x -> Tuple x $ fromCharArray x) <$> els
+
+  let trie1 :: Trie Char String
+      trie1 = delete (l $ toCharArray "aaa") trie0
+
+  assertEqual' "delete #0"
+    { expected: A.sort
+      [ "aaaa"
+      , "aaab"
+      , "aaaaaaaaaaaa"
+      , "aabaaaaa"
+      , "bbbbaaaa"
+      ]
+    , actual: snd <$> (toUnfoldable trie1 :: Array (Tuple (Array Char) String))
+    }
+
+  -- delete nothing
+  let trie2 :: Trie Char String
+      trie2 = delete (l $ toCharArray "a") trie1
+
+  assertEqual' "delete #1"
+    { expected: A.sort
+      [ "aaaa"
+      , "aaab"
+      , "aaaaaaaaaaaa"
+      , "aabaaaaa"
+      , "bbbbaaaa"
+      ]
+    , actual: snd <$> (toUnfoldable trie2 :: Array (Tuple (Array Char) String))
+    }
+
+  let trie3 :: Trie Char String
+      trie3 = delete (l $ toCharArray "bbbbaaaa") trie2
+
+  assertEqual' "delete #2"
+    { expected: A.sort
+      [ "aaaa"
+      , "aaab"
+      , "aaaaaaaaaaaa"
+      , "aabaaaaa"
+      ]
+    , actual: snd <$> (toUnfoldable trie3 :: Array (Tuple (Array Char) String))
+    }
+
+  let trie4 :: Trie Char String
+      trie4 = delete (l $ toCharArray "aaab") trie3
+
+  assertEqual' "delete #3"
+    { expected: A.sort
+      [ "aaaa"
+      , "aaaaaaaaaaaa"
+      , "aabaaaaa"
+      ]
+    , actual: snd <$> (toUnfoldable trie4 :: Array (Tuple (Array Char) String))
+    }
+
+  let trie5 :: Trie Char String
+      trie5 = delete (l $ toCharArray "aaaa") trie4
+
+  assertEqual' "delete #4"
+    { expected: A.sort
+      [ "aaaaaaaaaaaa"
+      , "aabaaaaa"
+      ]
+    , actual: snd <$> (toUnfoldable trie5 :: Array (Tuple (Array Char) String))
+    }
+
+  let trie6 :: Trie Char String
+      trie6 = delete (l $ toCharArray "aaaaaaaaaaaa") trie5
+
+  assertEqual' "delete #5"
+    { expected: A.sort
+      [ "aabaaaaa"
+      ]
+    , actual: snd <$> (toUnfoldable trie6 :: Array (Tuple (Array Char) String))
+    }
+
+  let trie7 :: Trie Char String
+      trie7 = delete (l $ toCharArray "aabaaaaa") trie6
+
+  assertEqual' "delete #6"
+    { expected: []
+    , actual: snd <$> (toUnfoldable trie7 :: Array (Tuple (Array Char) String))
+    }
+
+  assertEqual' "delete #6: size"
+    { expected: 0
+    , actual: size trie7
+    }
+
+  assertEqual' "delete #6: isEmpty"
+    { expected: true
+    , actual: isEmpty trie7
+    }
+
+  assertEqual' "delete #6: value"
+    { expected: Branch Nothing mempty
+    , actual: trie7
+    }
+
+  assertEqual' "delete #7"
+    { expected: mempty
+    , actual:
+      delete (l [1,2,3,4]) $
+      delete (l [1,2,3,4,5]) $
+      fromFoldable [ t [1,2,3,4,5] 6
+                   , t [1,2,3,4] 5
+                   ]
+    }
+
+  assertEqual' "delete #7: excessive deletions do not harm the trie" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3,4] 5
+                            ] in
+      { expected: trie
+      , actual:
+        delete (l [1,2,3]) $
+        delete (l [1,2]) $
+        trie
+      }
+
 
 t :: forall b f a. Foldable f => f a -> b -> Tuple (L.List a) b
 t path value = Tuple (L.fromFoldable path) value

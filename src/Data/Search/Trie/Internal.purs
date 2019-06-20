@@ -7,6 +7,7 @@ module Data.Search.Trie.Internal
        , query
        , subtrie
        , toUnfoldable
+       , toUnfoldable'
        )
 where
 
@@ -69,19 +70,24 @@ insert
   -> Trie k v
 insert path value (Branch mbOldValue children) =
   case L.uncons path of
-    -- If `path` is empty, insert a value right here.
+    -- If `path` is empty, insert a new value right here,
+    -- discarding the old one.
     Nothing -> Branch (Just value) children
     -- Otherwise, use a Map entry corresponding to the
     -- first character of `path`: either create a new
-    -- Trie, or insert into existing one.
+    -- `Trie`, or insert into the existing one.
     Just { head, tail } ->
       let child =
+            -- If this `Map` contains the `head` character,
+            -- insert `tail` into the corresponding `Trie`.
+            -- Otherwise, construct a new `Arc` from `tail`.
             case M.lookup head children of
-              Nothing ->
-                mkArc tail $ Branch (Just value) $ M.empty
               Just trie ->
                 insert tail value trie
+              Nothing ->
+                mkArc tail $ Branch (Just value) $ M.empty
       in
+        -- Update the `Map` in the current branch.
         Branch mbOldValue $ M.insert head child children
 insert path value (Arc len arc child) =
   let prefixLength = longestCommonPrefixLength path arc in
@@ -92,32 +98,35 @@ insert path value (Arc len arc child) =
     insert newPath value child
   else
     if prefixLength == 0 then
-      -- Create a branching
+      -- Replace `Arc` with a `Branch`.
       case L.uncons arc of
         Just { head, tail } ->
           insert path value $
           Branch Nothing $
           M.singleton head $
-          let len' = max 0 (len - 1)
-          in if len' > 0
-             then Arc len' tail child
-             else child
+          -- We want to avoid `L.length` call on `tail`: at this point
+          -- the length can be calculated.
+          let len' = len - 1 in
+          if len' > 0
+          then Arc len' tail child
+          else child
         Nothing ->
           empty -- impossible: `arc` is always non-empty
-    else let
-      outerArc = L.take prefixLength path
-      newPath  = L.drop prefixLength path
-      -- `innerArc` is always non-empty, because
-      -- `prefixLength == L.length arc` is false in this branch.
-      -- `prefixLength <= L.length arc` is true because `prefixLength` is
-      -- a length of some prefix of `arc`.
-      -- Thus `prefixLength < L.length arc`.
-      innerArc = L.drop prefixLength arc
-      innerArcLength = len - prefixLength
+    else
+      let
+        outerArc = L.take prefixLength path
+        newPath  = L.drop prefixLength path
+        -- `innerArc` is always non-empty, because
+        -- `prefixLength == L.length arc` is false in this branch.
+        -- `prefixLength <= L.length arc` is true because `prefixLength` is
+        -- a length of some prefix of `arc`.
+        -- Thus `prefixLength < L.length arc`.
+        innerArc = L.drop prefixLength arc
+        innerArcLength = len - prefixLength
       in
-       mkArc outerArc $
-       insert newPath value $
-       Arc innerArcLength innerArc child
+        mkArc outerArc $
+        insert newPath value $
+        Arc innerArcLength innerArc child
 
 subtrie :: forall k v. Ord k => List k -> Trie k v -> Maybe (Trie k v)
 subtrie path (Arc len arc child) =
@@ -134,7 +143,7 @@ subtrie path trie@(Branch _ children) =
       M.lookup head children >>= subtrie tail
 
 lookup :: forall k v. Ord k => List k -> Trie k v -> Maybe v
-lookup path trie = do
+lookup path trie =
   subtrie path trie >>= case _ of
     Branch mbValue _ -> mbValue
     _                -> Nothing
@@ -176,18 +185,15 @@ toUnfoldable
   :: forall f p k v
   .  Unfoldable f
   => Unfoldable p
-  => Functor f
   => Trie k v
   -> f (Tuple (p k) v)
 toUnfoldable trie =
-  toUnfoldable' trie <#> over1 L.toUnfoldable
+  L.toUnfoldable (toUnfoldable' trie <#> over1 L.toUnfoldable)
 
 toUnfoldable'
-  :: forall f k v
-  .  Functor f
-  => Unfoldable f
-  => Trie k v
-  -> f (Tuple (List k) v)
+  :: forall k v
+  .  Trie k v
+  -> List (Tuple (List k) v)
 toUnfoldable' (Branch mbValue children) =
   let valueList =
         fromMaybe mbValue <#> Tuple Nil
@@ -195,6 +201,6 @@ toUnfoldable' (Branch mbValue children) =
         M.toUnfoldable children >>=
         (\(Tuple char trie) ->
           over1 (char : _) <$> toUnfoldable' trie)
-  in L.toUnfoldable $ valueList <> childrenList
+  in valueList <> childrenList
 toUnfoldable' (Arc len path child) =
   over1 (path <> _) <$> toUnfoldable' child

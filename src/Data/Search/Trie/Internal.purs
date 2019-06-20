@@ -140,7 +140,9 @@ subtrie path trie@(Branch _ children) =
   case L.uncons path of
     Nothing -> Just trie
     Just { head, tail } ->
-      M.lookup head children >>= subtrie tail
+      case M.lookup head children of
+        Just trie' -> subtrie tail trie'
+        Nothing -> Nothing
 
 lookup :: forall k v. Ord k => List k -> Trie k v -> Maybe v
 lookup path trie =

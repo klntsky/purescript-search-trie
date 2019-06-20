@@ -8,6 +8,7 @@ module Data.Search.Trie.Internal
        , isEmpty
        , lookup
        , query
+       , size
        , subtrie
        , toUnfoldable
        , toUnfoldable'
@@ -16,7 +17,7 @@ where
 
 import Prelude
 
-import Data.Foldable (class Foldable, all, foldl)
+import Data.Foldable (class Foldable, foldl)
 import Data.List (List(..), (:))
 import Data.List as L
 import Data.Map (Map)
@@ -143,11 +144,25 @@ empty :: forall k v. Ord k => Trie k v
 empty = Branch Nothing mempty
 
 isEmpty :: forall k v. Trie k v -> Boolean
-isEmpty (Branch (Just _) _) = false
-isEmpty (Branch Nothing children) =
-  all (snd >>> isEmpty) (M.toUnfoldableUnordered children :: Array (Tuple k (Trie k v)))
-isEmpty (Arc _ _ child) =
-  isEmpty child
+isEmpty = isEmpty' <<< pure
+  where
+    isEmpty' Nil = true
+    isEmpty' (Branch (Just _) _ : _) = false
+    isEmpty' (Branch _ children : rest)
+      = isEmpty' $
+        (snd <$> M.toUnfoldableUnordered children) <> rest
+    isEmpty' (Arc _ _ child : rest) =
+      isEmpty' (child : rest)
+
+size :: forall k v. Trie k v -> Int
+size trie = size' (pure trie) 0
+  where
+    size' Nil acc = acc
+    size' (Branch mbValue children : rest) acc =
+      size' ((snd <$> M.toUnfoldableUnordered children) <> rest)
+            (MB.maybe acc (const (acc + 1)) mbValue)
+    size' (Arc _ _ child : rest) acc =
+      size' (child : rest) acc
 
 subtrie :: forall k v. Ord k => List k -> Trie k v -> Maybe (Trie k v)
 subtrie path (Arc len arc child) =

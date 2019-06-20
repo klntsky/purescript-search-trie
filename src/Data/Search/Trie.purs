@@ -8,6 +8,7 @@ import Data.Search.Trie.Internal
   , isEmpty
   , lookup
   , query
+  , size
   , subtrie
   , toUnfoldable
   )

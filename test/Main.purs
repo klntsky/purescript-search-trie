@@ -6,7 +6,7 @@ import Data.Array (sort)
 import Data.List as L
 import Data.Map as M
 import Data.Maybe (Maybe(..))
-import Data.Search.Trie (fromFoldable, insert, lookup, subtrie, toUnfoldable)
+import Data.Search.Trie (fromFoldable, insert, isEmpty, lookup, subtrie, size, toUnfoldable)
 import Data.Search.Trie.Internal (Trie(..))
 import Data.String.CodeUnits (fromCharArray, toCharArray)
 import Data.Traversable (class Foldable, for_)
@@ -16,9 +16,50 @@ import Test.Assert (assertEqual')
 
 main :: Effect Unit
 main = do
+  testIsEmpty
+  testSize
   testInsert
   testSubtrie
   testGiantTrie
+
+testIsEmpty :: Effect Unit
+testIsEmpty = do
+  assertEqual' "isEmpty #0"
+    { expected: true
+    , actual: isEmpty (mempty :: Trie Int Int)
+    }
+
+  assertEqual' "isEmpty #1"
+    { expected: false
+    , actual: isEmpty (branch [ tup 0 (single 1)
+                              ])
+    }
+
+testSize :: Effect Unit
+testSize = do
+  assertEqual' "size #0"
+    { expected: 0
+    , actual: size (mempty :: Trie Int Int)
+    }
+
+  assertEqual' "size #1"
+    { expected: 2
+    , actual: size $
+      branch [ tup 0 (single 0)
+             , tup 1 (single 1)
+             ]
+    }
+
+  assertEqual' "size #2"
+    { expected: 3
+    , actual: size $
+      branch [ tup 0 (single 0)
+             , tup 1 (branch [ tup 0 (single 0)
+                             , tup 1 (single 1)
+                             ]
+                     )
+             ]
+    }
 
 testInsert :: Effect Unit
 testInsert = do
@@ -28,11 +69,10 @@ testInsert = do
         insert (l [1]) 1 $
         mempty
 
-  assertEqual' "insert #0: Arc works"
-    { expected:
-                         branch [ tup 0 (single 0)
-                                , tup 1 (single 1)
-                                ]
+  assertEqual' "insert #0: Branch works"
+    { expected: branch [ tup 0 (single 0)
+                       , tup 1 (single 1)
+                       ]
     , actual: trie0
     }
 

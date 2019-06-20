@@ -1,7 +1,10 @@
 module Data.Search.Trie.Internal
        ( Trie(..)
+       , Ctx(..)
+       , Zipper(..)
        , fromFoldable
        , insert
+       , insert'
        , isEmpty
        , lookup
        , query
@@ -23,6 +26,7 @@ import Data.Maybe as MB
 import Data.Tuple (Tuple(..), snd)
 import Data.Tuple.Nested (over1)
 import Data.Unfoldable (class Unfoldable, fromMaybe)
+import Data.Array as A
 
 data Trie k v =
   Branch (Maybe v) (Map k (Trie k v))
@@ -35,7 +39,16 @@ data Trie k v =
 derive instance eqTrie :: (Eq k, Eq v) => Eq (Trie k v)
 
 instance showTrie :: (Show k, Show v) => Show (Trie k v) where
-  show (Branch mb mp) = "(Branch " <> show mb <> " " <> show mp <> ")"
+  show (Branch mb mp) = "(Branch " <> show mb <> " " <> showMap mp <> ")"
+    where
+      showMap m =
+        "{ " <>
+        (A.intercalate ", " (
+            (M.toUnfoldable m <#>
+             \(Tuple k v) -> show k <> ": " <> show v) :: Array _
+            )) <>
+        " }"
+
   show (Arc len path trie) = "(Arc " <> show len <> " " <> show path <> " " <> show trie <> ")"
 
 instance semigroupTrie :: Ord k => Semigroup (Trie k v) where
@@ -46,72 +59,62 @@ instance semigroupTrie :: Ord k => Semigroup (Trie k v) where
 instance monoidTrie :: Ord k => Monoid (Trie k v) where
   mempty = empty
 
-empty :: forall k v. Trie k v
-empty = Branch Nothing M.empty
+data Ctx k v = BranchCtx (Maybe v) k (Map k (Trie k v))
+             | ArcCtx Int (List k)
 
-isEmpty :: forall k v. Trie k v -> Boolean
-isEmpty (Branch (Just _) _) = false
-isEmpty (Branch Nothing children) =
-  all (snd >>> isEmpty) (M.toUnfoldableUnordered children :: Array (Tuple k (Trie k v)))
-isEmpty (Arc _ _ child) =
-  isEmpty child
+data Zipper k v = Zipper (Trie k v) (List (Ctx k v))
 
--- | A smart constructor to ensure Arc non-emptiness.
-mkArc :: forall k v. List k -> Trie k v -> Trie k v
-mkArc Nil trie = trie
-mkArc arc trie = Arc (L.length arc) arc trie
+fromZipper :: forall k v. Ord k => Zipper k v -> Trie k v
+fromZipper (Zipper trie Nil) = trie
+fromZipper (Zipper trie (Cons x ctx)) =
+  case x, trie of
+    BranchCtx mbValue key other, _ ->
+      fromZipper (Zipper (Branch mbValue $ M.insert key trie other) ctx)
+    ArcCtx len path,             Arc len' path' child ->
+      fromZipper (Zipper (Arc (len + len') (path <> path') child) ctx)
+    ArcCtx len path,             _ ->
+      fromZipper (Zipper (Arc len path trie) ctx)
 
-insert
-  :: forall k v
-  .  Ord k
-  => List k
-  -> v
-  -> Trie k v
-  -> Trie k v
-insert path value (Branch mbOldValue children) =
-  case L.uncons path of
-    -- If `path` is empty, insert a new value right here,
-    -- discarding the old one.
-    Nothing -> Branch (Just value) children
-    -- Otherwise, use a Map entry corresponding to the
-    -- first character of `path`: either create a new
-    -- `Trie`, or insert into the existing one.
-    Just { head, tail } ->
-      let child =
-            -- If this `Map` contains the `head` character,
-            -- insert `tail` into the corresponding `Trie`.
-            -- Otherwise, construct a new `Arc` from `tail`.
-            case M.lookup head children of
-              Just trie ->
-                insert tail value trie
-              Nothing ->
-                mkArc tail $ Branch (Just value) $ M.empty
-      in
-        -- Update the `Map` in the current branch.
-        Branch mbOldValue $ M.insert head child children
-insert path value (Arc len arc child) =
+insert :: forall k v. Ord k => List k -> v -> Trie k v -> Trie k v
+insert path value trie = fromZipper (insert' path value (Zipper trie Nil))
+
+insert' :: forall k v. Ord k => List k -> v -> Zipper k v -> Zipper k v
+insert' Nil  value (Zipper (Branch mbValue children) ctx) =
+  Zipper (Branch (Just value) children) ctx
+insert' (head : tail) value (Zipper (Branch mbOldValue children) ctx) =
+  case M.lookup head children of
+    Just child ->
+      insert' tail value $
+      Zipper child
+             (BranchCtx mbOldValue head children : ctx)
+    Nothing ->
+      Zipper (mkArc tail $ Branch (Just value) mempty)
+             (BranchCtx mbOldValue head children : ctx)
+insert' path value (Zipper (Arc len arc child) ctx) =
   let prefixLength = longestCommonPrefixLength path arc in
   if prefixLength == len
   then
-    let newPath  = L.drop prefixLength path in
-    Arc len arc $
-    insert newPath value child
+    let newPath = L.drop prefixLength path in
+    insert' newPath value $
+    Zipper child $
+    ArcCtx len arc : ctx
   else
     if prefixLength == 0 then
       -- Replace `Arc` with a `Branch`.
       case L.uncons arc of
         Just { head, tail } ->
-          insert path value $
-          Branch Nothing $
-          M.singleton head $
           -- We want to avoid `L.length` call on `tail`: at this point
           -- the length can be calculated.
-          let len' = len - 1 in
-          if len' > 0
-          then Arc len' tail child
-          else child
+          let len' = len - 1
+              children = M.singleton head $
+                         if len' > 0
+                         then Arc len' tail child
+                         else child
+          in
+            insert' path value $
+            Zipper (Branch Nothing children) ctx
         Nothing ->
-          empty -- impossible: `arc` is always non-empty
+          Zipper empty ctx -- impossible: `arc` is always non-empty
     else
       let
         outerArc = L.take prefixLength path
@@ -123,10 +126,28 @@ insert path value (Arc len arc child) =
         -- Thus `prefixLength < L.length arc`.
         innerArc = L.drop prefixLength arc
         innerArcLength = len - prefixLength
+        outerArcLength = L.length outerArc
       in
-        mkArc outerArc $
-        insert newPath value $
-        Arc innerArcLength innerArc child
+        insert' newPath value $
+        Zipper (Arc innerArcLength innerArc child)
+        if outerArcLength == 0
+        then ctx
+        else ArcCtx outerArcLength outerArc : ctx
+
+-- | A smart constructor to ensure Arc non-emptiness.
+mkArc :: forall k v. List k -> Trie k v -> Trie k v
+mkArc Nil trie = trie
+mkArc arc trie = Arc (L.length arc) arc trie
+
+empty :: forall k v. Ord k => Trie k v
+empty = Branch Nothing mempty
+
+isEmpty :: forall k v. Trie k v -> Boolean
+isEmpty (Branch (Just _) _) = false
+isEmpty (Branch Nothing children) =
+  all (snd >>> isEmpty) (M.toUnfoldableUnordered children :: Array (Tuple k (Trie k v)))
+isEmpty (Arc _ _ child) =
+  isEmpty child
 
 subtrie :: forall k v. Ord k => List k -> Trie k v -> Maybe (Trie k v)
 subtrie path (Arc len arc child) =

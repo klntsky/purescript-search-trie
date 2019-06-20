@@ -23,6 +23,19 @@ main = do
 testInsert :: Effect Unit
 testInsert = do
 
+  let trie0 =
+        insert (l [0]) 0 $
+        insert (l [1]) 1 $
+        mempty
+
+  assertEqual' "insert #0: Arc works"
+    { expected:
+                         branch [ tup 0 (single 0)
+                                , tup 1 (single 1)
+                                ]
+    , actual: trie0
+    }
+
   let trie1 =
         insert (l [1,2,3,4,5,6]) 0 $
         insert (l [1,2,3,4,5,7]) 1 $

@@ -4,6 +4,7 @@ module Data.Search.Trie.Internal
        , Zipper(..)
        , alter
        , delete
+       , eq'
        , fromFoldable
        , fromZipper
        , insert
@@ -42,19 +43,36 @@ data Trie k v =
   -- The list is always non-empty.
   | Arc Int (List k) (Trie k v)
 
-derive instance eqTrie :: (Eq k, Eq v) => Eq (Trie k v)
+instance eqTrie :: (Eq k, Eq v) => Eq (Trie k v) where
+  eq a b = toUnfoldable' a == toUnfoldable' b
+
+-- | Structural equality.
+eq' :: forall k v. Eq k => Eq v => Trie k v -> Trie k v -> Boolean
+eq' (Branch mbValue1 children1) (Branch mbValue2 children2) =
+  if mbValue1 == mbValue2
+  then
+    let childrenList1 = M.toUnfoldable children1 :: Array (Tuple k (Trie k v))
+        childrenList2 = M.toUnfoldable children2
+    in
+     if A.length childrenList1 == A.length childrenList2
+     then A.all identity $
+          A.zipWith (\(Tuple k1 v1) (Tuple k2 v2) ->
+                      if k1 == k2
+                      then
+                        eq' v1 v2
+                      else
+                        false
+                    )
+          childrenList1
+          childrenList2
+     else false
+  else false
+eq' (Arc len1 path1 child1) (Arc len2 path2 child2) =
+  len1 == len2 && path1 == path2 && eq' child1 child2
+eq' _ _ = false
 
 instance showTrie :: (Show k, Show v) => Show (Trie k v) where
-  show (Branch mb mp) = "(Branch " <> show mb <> " " <> showMap mp <> ")"
-    where
-      showMap m =
-        "{ " <>
-        (A.intercalate ", " (
-            (M.toUnfoldable m <#>
-             \(Tuple k v) -> show k <> ": " <> show v) :: Array _
-            )) <>
-        " }"
-
+  show (Branch mb mp) = "(Branch " <> show mb <> " " <> show mp <> ")"
   show (Arc len path trie) = "(Arc " <> show len <> " " <> show path <> " " <> show trie <> ")"
 
 instance semigroupTrie :: Ord k => Semigroup (Trie k v) where

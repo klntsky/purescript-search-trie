@@ -7,13 +7,15 @@ import Data.Array as A
 import Data.List as L
 import Data.Map as M
 import Data.Maybe (Maybe(..))
+import Data.Maybe as MB
 import Data.Search.Trie (fromFoldable, insert, isEmpty, lookup, query, subtrie, size, toUnfoldable, delete)
-import Data.Search.Trie.Internal (Trie(..))
+import Data.Search.Trie.Internal (Trie(..), eq')
 import Data.String.CodeUnits (fromCharArray, toCharArray)
 import Data.Traversable (class Foldable, for_)
 import Data.Tuple (Tuple(..), fst, snd)
 import Effect (Effect)
-import Test.Assert (assertEqual')
+import Effect.Console (log)
+import Test.Assert (assert, assertEqual')
 
 main :: Effect Unit
 main = do
@@ -72,7 +74,7 @@ testInsert = do
         insert (l [1]) 1 $
         mempty
 
-  assertEqual' "insert #0: Branch works"
+  assertEq' "insert #0: Branch works"
     { expected: branch [ tup 0 (single 0)
                        , tup 1 (single 1)
                        ]
@@ -84,7 +86,7 @@ testInsert = do
         insert (l [1,2,3,4,5,7]) 1 $
         mempty
 
-  assertEqual' "insert #1: Arc works"
+  assertEq' "insert #1: Arc works"
     { expected: branch [ tup 1 $
                          arc [2,3,4,5] $
                          branch [ tup 6 (single 0)
@@ -315,7 +317,7 @@ testDelete = do
     , actual: trie7
     }
 
-  assertEqual' "delete #7"
+  assertEq' "delete #7"
     { expected: mempty
     , actual:
       delete (l [1,2,3,4]) $
@@ -325,7 +327,7 @@ testDelete = do
                    ]
     }
 
-  assertEqual' "delete #7: excessive deletions do not harm the trie" $
+  assertEq' "delete #7: excessive deletions do not harm the trie" $
     let trie = fromFoldable [ t [1,2,3,4,5] 6
                             , t [1,2,3,4] 5
                             ] in
@@ -333,6 +335,76 @@ testDelete = do
       , actual:
         delete (l [1,2,3]) $
         delete (l [1,2]) $
+        trie
+      }
+
+  assertEqual' "delete #8: deletions do not remove longer arcs" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3] 5
+                            ] in
+      { expected: fromFoldable [ t [1,2,3,4,5] 6
+                               ]
+      , actual:
+        delete (l [1,2,3]) $
+        trie
+      }
+
+  assertEqual' "delete #9: deletions do not remove longer arcs" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3,4,6] 5
+                            , t [1,2,3,5,6] 5
+                            ] in
+      { expected: fromFoldable [ t [1,2,3,4,5] 6
+                               , t [1,2,3,4,6] 5
+                               ]
+      , actual:
+        delete (l [1,2,3,5,6]) $
+        trie
+      }
+
+  assertEqual' "delete #10: deletions do not remove longer arcs" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3,4,6] 5
+                            , t [1,2,3] 5
+                            ] in
+      { expected: fromFoldable [ t [1,2,3,4,5] 6
+                               , t [1,2,3,4,6] 5
+                               ]
+      , actual:
+        delete (l [1,2,3]) $
+        trie
+      }
+
+  assertEqual' "delete #11: deletions do not remove longer arcs" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3,4,6] 5
+                            , t [1,2,3] 5
+                            ] in
+      { expected: trie
+      , actual:
+        delete (l []) $
+        trie
+      }
+
+  assertEqual' "delete #12: deletions do not remove longer arcs" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3,4,6] 5
+                            , t [1,2,3] 5
+                            ] in
+      { expected: trie
+      , actual:
+        delete (l [2]) $
+        trie
+      }
+
+  assertEqual' "delete #13: deletions do not remove longer arcs" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3,4,6] 5
+                            , t [1,2,3] 5
+                            ] in
+      { expected: trie
+      , actual:
+        delete (l [1]) $
         trie
       }
 
@@ -1185,3 +1257,40 @@ giantArray = map toCharArray
        , "zeta"
        , "zeta-extra"
        ]
+
+-- | Assert structural equality of tries (Data.Search.Trie.Internal.eq')
+assertEq'
+  :: forall k v
+  .  Ord k
+  => Eq v
+  => Show k
+  => Show v
+  => String
+  -> { expected :: Trie k v
+     , actual :: Trie k v
+     }
+  -> Effect Unit
+assertEq' message { expected, actual } =
+  if eq' expected actual
+  then pure unit
+  else do
+    log $ "Assertion failed: " <> message
+    log $ "Expected: " <> inspect expected
+    log $ "Actual:   " <> inspect actual
+    assert false
+
+
+inspect :: forall k v. Show k => Show v => Trie k v -> String
+inspect (Branch mb mp) = "(Branch " <> showKey mb <> " " <> showMap mp <> ")"
+    where
+      showKey = MB.maybe "" show
+      showMap m
+       | M.isEmpty m = "{}"
+       | otherwise =
+         "{ " <>
+         (A.intercalate ", " (
+             (M.toUnfoldable m <#>
+              \(Tuple k v) -> show k <> ": " <> inspect v) :: Array String
+             )) <>
+         " }"
+inspect (Arc len path trie) = "(Arc " <> " " <> show (L.toUnfoldable path :: Array k) <> " " <> inspect trie <> ")"

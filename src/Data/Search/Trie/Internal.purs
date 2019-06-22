@@ -65,11 +65,11 @@ instance semigroupTrie :: Ord k => Semigroup (Trie k v) where
 instance monoidTrie :: Ord k => Monoid (Trie k v) where
   mempty = empty
 
-instance functorTrie :: Functor (Trie k) where
-  map f (Branch mbValue children) =
-    Branch (f <$> mbValue) (map f <$> children)
-  map f (Arc len path trie) =
-    Arc len path (f <$> trie)
+instance functorTrie :: Ord k => Functor (Trie k) where
+  map f trie =
+    fromList $
+    entriesUnordered trie <#>
+    \(Tuple path v) -> Tuple path (f v)
 
 -- | Structural equality.
 eq'

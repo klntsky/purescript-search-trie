@@ -4,11 +4,12 @@ import Prelude
 
 import Data.Array (sort)
 import Data.Array as A
+import Data.List ((:), List(Nil))
 import Data.List as L
 import Data.Map as M
 import Data.Maybe (Maybe(..))
 import Data.Maybe as MB
-import Data.Search.Trie (fromFoldable, insert, isEmpty, lookup, query, subtrie, size, toUnfoldable, delete)
+import Data.Search.Trie (alter, delete, deleteByPrefix, entries, entriesUnordered, fromFoldable, insert, isEmpty, lookup, query, queryValues, size, subtrie, subtrieWithPrefixes, update, values)
 import Data.Search.Trie.Internal (Trie(..), eq')
 import Data.String.CodeUnits (fromCharArray, toCharArray)
 import Data.Traversable (class Foldable, for_)
@@ -24,8 +25,13 @@ main = do
   testInsert
   testSubtrie
   testGiantTrie
+  testEntries
   testQuery
   testDelete
+  testDeleteByPrefix
+  testAlter
+  testUpdate
+  testValues
 
 testIsEmpty :: Effect Unit
 testIsEmpty = do
@@ -111,7 +117,7 @@ testSubtrie = do
       , t [4,6] 1
       ]
     , actual:
-      toUnfoldable <$>
+      L.toUnfoldable <<< entries <$>
       subtrie (l [1,2,3]) trie1
     }
 
@@ -130,7 +136,7 @@ testSubtrie = do
       , t [4,6] 1
       ]
     , actual:
-      toUnfoldable <$>
+      L.toUnfoldable <<< entries <$>
       subtrie (l [1,2,3]) trie2
     }
 
@@ -147,7 +153,7 @@ testSubtrie = do
       , t [4,5,62] 2
       ]
     , actual:
-      toUnfoldable <$>
+      L.toUnfoldable <<< entries <$>
       subtrie (l [1,2,3]) trie3
     }
 
@@ -158,8 +164,22 @@ testSubtrie = do
       , t [62] 2
       ]
     , actual:
-      toUnfoldable <$>
+      L.toUnfoldable <<< entries <$>
       subtrie (l [1,2,3,4,5]) trie3
+    }
+
+  let trie4 =
+        fromFoldable [ t [1,2,3,5] 0
+                     , t [1,2,3,4,5] 1
+                     , t [1,2,0] 2
+                     ]
+
+  assertEqual' "subtrie #5"
+    { expected: Just $
+      fromFoldable [ t [1,2,3,5] 0
+                   , t [1,2,3,4,5] 1
+                   ]
+    , actual: subtrieWithPrefixes (l [1,2,3]) trie4
     }
 
 testGiantTrie :: Effect Unit
@@ -172,10 +192,47 @@ testGiantTrie = do
       , actual: lookup (l key) giantTrie
       }
 
-  let allKeys = fst <$> toUnfoldable giantTrie
+  assertEqual' "lookup #0"
+    { expected: Nothing
+    , actual: lookup (l $ toCharArray "foo") giantTrie
+    }
+
+  let allKeys = L.toUnfoldable <<< fst <$> entries giantTrie
   assertEqual' "giantTrie" { expected: sort $ map fromCharArray giantArray
-                           , actual: sort $ map fromCharArray allKeys
+                           , actual: sort $ L.toUnfoldable $ map fromCharArray allKeys
                            }
+
+testEntries :: Effect Unit
+testEntries = do
+  assertEqual' "entries #0"
+    { expected: ((Tuple (1 : 2 : 3 : 4 : 5 : 60 : Nil) 0) :
+                 (Tuple (1 : 2 : 3 : 4 : 5 : 61 : Nil) 1) :
+                 (Tuple (1 : 2 : 3 : 4 : 5 : 62 : Nil) 2) :
+                 (Tuple (1 : 2 : 4 : 4 : 5 : 62 : Nil) 2) :
+                 (Tuple (10 : 20 : 30 : 40 : 50 : 60 : Nil) 3) : Nil)
+    , actual: entries $
+       fromFoldable [ t [1,2,3,4,5,60] 0
+                    , t [1,2,3,4,5,61] 1
+                    , t [10,20,30,40,50,60] 3
+                    , t [1,2,3,4,5,62] 2
+                    , t [1,2,4,4,5,62] 2
+                    ]
+    }
+
+  assertEqual' "entries #0"
+    { expected: ((Tuple (1 : 2 : 3 : 4 : 5 : 61 : Nil) 1) :
+                 (Tuple (1 : 2 : 3 : 4 : 5 : 60 : Nil) 0) :
+                 (Tuple (1 : 2 : 3 : 4 : 5 : 62 : Nil) 2) :
+                 (Tuple (1 : 2 : 4 : 4 : 5 : 62 : Nil) 2) :
+                 (Tuple (10 : 20 : 30 : 40 : 50 : 60 : Nil) 3) : Nil)
+    , actual: entriesUnordered $
+       fromFoldable [ t [1,2,3,4,5,60] 0
+                    , t [1,2,3,4,5,61] 1
+                    , t [10,20,30,40,50,60] 3
+                    , t [1,2,3,4,5,62] 2
+                    , t [1,2,4,4,5,62] 2
+                    ]
+    }
 
 testQuery :: Effect Unit
 testQuery = do
@@ -196,10 +253,54 @@ testQuery = do
       , "aaaaaaaaaaaa"
       ]
     , actual:
+      L.toUnfoldable $
       map snd $
-      query (toCharArray "aaa") $
+      query (L.fromFoldable $ toCharArray "aaa") $
       fromFoldable $
       (\x -> Tuple x $ fromCharArray x) <$> els
+    }
+
+  assertEqual' "query #1" $
+    let trie = fromFoldable $
+               [ t [1,2,3] 1
+               , t [1,4,5] 2
+               , t [] 3
+               ] in
+    { expected: L.fromFoldable $
+      [ t [1,2,3] 1
+      , t [1,4,5] 2
+      ]
+    , actual:
+      query (l [1]) trie
+    }
+
+  assertEqual' "query #2" $
+    let trie = fromFoldable $
+               [ t [1] 0
+               , t [1,2,3] 1
+               , t [1,4,5] 2
+               , t [1,2,3,4,5] 4
+               , t [] 3
+               ] in
+    { expected: L.fromFoldable $
+      [ t [1] 0
+      , t [1,2,3] 1
+      , t [1,2,3,4,5] 4
+      , t [1,4,5] 2
+      ]
+    , actual:
+      query (l [1]) trie
+    }
+
+  assertEqual' "queryValues #0" $
+    let trie = fromFoldable $
+               [ t [1,2,3] 1
+               , t [1,4,5] 2
+               , t [] 3
+               ] in
+    { expected: L.fromFoldable [1,2]
+    , actual:
+      queryValues (l [1]) trie
     }
 
 testDelete :: Effect Unit
@@ -230,7 +331,7 @@ testDelete = do
       , "aabaaaaa"
       , "bbbbaaaa"
       ]
-    , actual: snd <$> (toUnfoldable trie1 :: Array (Tuple (Array Char) String))
+    , actual: snd <$> (L.toUnfoldable (entries trie1))
     }
 
   -- delete nothing
@@ -245,7 +346,7 @@ testDelete = do
       , "aabaaaaa"
       , "bbbbaaaa"
       ]
-    , actual: snd <$> (toUnfoldable trie2 :: Array (Tuple (Array Char) String))
+    , actual: snd <$> (L.toUnfoldable $ entries trie2)
     }
 
   let trie3 :: Trie Char String
@@ -258,7 +359,7 @@ testDelete = do
       , "aaaaaaaaaaaa"
       , "aabaaaaa"
       ]
-    , actual: snd <$> (toUnfoldable trie3 :: Array (Tuple (Array Char) String))
+    , actual: snd <$> (L.toUnfoldable $ entries trie3)
     }
 
   let trie4 :: Trie Char String
@@ -270,7 +371,7 @@ testDelete = do
       , "aaaaaaaaaaaa"
       , "aabaaaaa"
       ]
-    , actual: snd <$> (toUnfoldable trie4 :: Array (Tuple (Array Char) String))
+    , actual: snd <$> (L.toUnfoldable $ entries trie4)
     }
 
   let trie5 :: Trie Char String
@@ -281,7 +382,7 @@ testDelete = do
       [ "aaaaaaaaaaaa"
       , "aabaaaaa"
       ]
-    , actual: snd <$> (toUnfoldable trie5 :: Array (Tuple (Array Char) String))
+    , actual: snd <$> (L.toUnfoldable $ entries trie5)
     }
 
   let trie6 :: Trie Char String
@@ -291,7 +392,7 @@ testDelete = do
     { expected: A.sort
       [ "aabaaaaa"
       ]
-    , actual: snd <$> (toUnfoldable trie6 :: Array (Tuple (Array Char) String))
+    , actual: snd <$> (L.toUnfoldable $ entries trie6)
     }
 
   let trie7 :: Trie Char String
@@ -299,7 +400,7 @@ testDelete = do
 
   assertEqual' "delete #6"
     { expected: []
-    , actual: snd <$> (toUnfoldable trie7 :: Array (Tuple (Array Char) String))
+    , actual: snd <$> (L.toUnfoldable $ entries trie7)
     }
 
   assertEqual' "delete #6: size"
@@ -408,6 +509,243 @@ testDelete = do
         trie
       }
 
+  assertEqual' "delete #14" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3,4,6] 5
+                            , t [1,2,3,4,7] 5
+                            , t [1,2,3] 5
+                            ] in
+      { expected:
+        fromFoldable [ t [1,2,3,4,5] 6
+                     , t [1,2,3,4,6] 5
+                     , t [1,2,3] 5
+                     ]
+      , actual:
+        delete (l [1,2,3,4,7]) $
+        trie
+      }
+
+  assertEqual' "delete #15" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3,4,6] 5
+                            , t [1,2,3,4,7] 5
+                            , t [1,2,3] 5
+                            ] in
+      { expected:
+        fromFoldable [ t [1,2,3,4,5] 6
+                     , t [1,2,3,4,6] 5
+                     , t [1,2,3,4,7] 5
+                     ]
+      , actual:
+        delete (l [1,2,3]) $
+        trie
+      }
+
+  assertEq' "delete #16: stuctural equality" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            ] in
+     { expected: mempty
+     , actual: delete (l [1,2,3,4,5]) trie
+     }
+
+testDeleteByPrefix :: Effect Unit
+testDeleteByPrefix = do
+  assertEq' "deleteByPrefix #0" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3,4,6] 5
+                            , t [1,2,3,4,7] 5
+                            , t [1,2,3] 5
+                            ] in
+      { expected: mempty
+      , actual:
+        deleteByPrefix (l [1,2,3]) $
+        trie
+      }
+
+  assertEq' "deleteByPrefix #1" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3,4,6] 5
+                            , t [1,2,3,4,7] 5
+                            , t [1,2,3] 5
+                            ] in
+      { expected: mempty
+      , actual:
+        deleteByPrefix (l []) $
+        trie
+      }
+
+  assertEq' "deleteByPrefix #2" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3,4,6] 5
+                            , t [1,2,3,4,7] 5
+                            , t [1,2,3] 5
+                            ] in
+      { expected: fromFoldable [ t [1,2,3] 5
+                               ]
+      , actual:
+        deleteByPrefix (l [1,2,3,4]) $
+        trie
+      }
+
+testAlter :: Effect Unit
+testAlter = do
+
+  -- Note: no structural equality here.
+  assertEqual' "alter #0: can delete using alter" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3,4,6] 5
+                            , t [1,2,3,4,7] 5
+                            , t [1,2,3] 5
+                            ] in
+      { expected: fromFoldable [ t [1,2,3,4,5] 6
+                               , t [1,2,3,4,6] 5
+                               , t [1,2,3,4,7] 5
+                               ]
+      , actual:
+        alter (l [1,2,3]) (const Nothing)
+        trie
+      }
+
+  assertEq' "alter #1: can delete using alter" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3,4,6] 5
+                            , t [1,2,3,4,7] 5
+                            , t [1,2,3] 5
+                            ] in
+      { expected: delete (l [1,2,3]) trie
+      , actual:
+        alter (l [1,2,3]) (const Nothing)
+        trie
+      }
+
+  assertEq' "alter #2: can delete using alter" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3,4,6] 5
+                            , t [1,2,3,4,7] 5
+                            , t [1,2,3] 5
+                            ] in
+      { expected: delete (l [1,2,3,4,5]) trie
+      , actual:
+        alter (l [1,2,3,4,5]) (const Nothing)
+        trie
+      }
+
+  assertEqual' "alter #3: can delete using alter" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3,4,6] 5
+                            , t [1,2,3,4,7] 5
+                            , t [1,2,3] 5
+                            ] in
+      { expected: fromFoldable [ t [1,2,3,4,6] 5
+                               , t [1,2,3,4,7] 5
+                               , t [1,2,3] 5
+                               ]
+      , actual:
+        alter (l [1,2,3,4,5]) (const Nothing)
+        trie
+      }
+
+  assertEqual' "alter #4: can insert using alter" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3,4,6] 5
+                            , t [1,2,3,4,7] 5
+                            ] in
+      { expected: fromFoldable [ t [1,2,3,4,5] 6
+                               , t [1,2,3,4,6] 5
+                               , t [1,2,3,4,7] 5
+                               , t [1,2,3] 5
+                               ]
+      , actual:
+        alter (l [1,2,3]) (const $ Just 5)
+        trie
+      }
+
+  assertEqual' "alter #5: can insert using alter" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3,4,6] 5
+                            ] in
+      { expected: fromFoldable [ t [1,2,3,4,5] 6
+                               , t [1,2,3,4,6] 5
+                               , t [1,2,3,4,7] 5
+                               ]
+      , actual:
+        alter (l [1,2,3,4,7]) (const $ Just 5)
+        trie
+      }
+
+  assertEqual' "alter #6: can update using alter" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3,4,6] 5
+                            ] in
+      { expected: fromFoldable [ t [1,2,3,4,5] 6
+                               , t [1,2,3,4,6] 50
+                               ]
+      , actual:
+        alter (l [1,2,3,4,6]) (map (_ * 10))
+        trie
+      }
+
+  assertEqual' "alter #7: can update using alter" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [] 5
+                            ] in
+      { expected: fromFoldable [ t [1,2,3,4,5] 6
+                               , t [] 50
+                               ]
+      , actual:
+        alter (l []) (map (_ * 10))
+        trie
+      }
+
+testUpdate :: Effect Unit
+testUpdate = do
+
+  assertEqual' "update #0" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [] 5
+                            ] in
+      { expected: fromFoldable [ t [1,2,3,4,5] 6
+                               , t [] 50
+                               ]
+      , actual:
+        update (_ * 10) (l [])
+        trie
+      }
+
+  assertEqual' "update #1" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [] 5
+                            ] in
+      { expected: fromFoldable [ t [1,2,3,4,5] 60
+                               , t [] 5
+                               ]
+      , actual:
+        update (_ * 10) (l [1,2,3,4,5])
+        trie
+      }
+
+  assertEqual' "update #2" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [] 5
+                            ] in
+      { expected: fromFoldable [ t [1,2,3,4,5] 6
+                               , t [] 5
+                               ]
+      , actual:
+        update (_ * 10) (l [1,2,3,4])
+        trie
+      }
+
+testValues :: Effect Unit
+testValues = do
+
+  assertEqual' "values #0" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [] 5
+                            ] in
+      { expected: l [5,6]
+      , actual: values trie
+      }
 
 t :: forall b f a. Foldable f => f a -> b -> Tuple (L.List a) b
 t path value = Tuple (L.fromFoldable path) value

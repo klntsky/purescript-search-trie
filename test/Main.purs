@@ -548,6 +548,21 @@ testDelete = do
      , actual: delete (l [1,2,3,4,5]) trie
      }
 
+  assertEq' "delete #17: stuctural equality" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            ] in
+     { expected: trie
+     , actual: delete (l [1,2,3]) trie
+     }
+
+  assertEqual' "delete #18" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            , t [1,2,3] 6
+                            ] in
+     { expected: fromFoldable [ t [1,2,3,4,5] 6 ]
+     , actual: delete (l [1,2,3]) trie
+     }
+
 testDeleteByPrefix :: Effect Unit
 testDeleteByPrefix = do
   assertEq' "deleteByPrefix #0" $
@@ -584,6 +599,15 @@ testDeleteByPrefix = do
                                ]
       , actual:
         deleteByPrefix (l [1,2,3,4]) $
+        trie
+      }
+
+  assertEq' "deleteByPrefix #3" $
+    let trie = fromFoldable [ t [1,2,3,4,5] 6
+                            ] in
+      { expected: mempty
+      , actual:
+        deleteByPrefix (l [1,2,3]) $
         trie
       }
 

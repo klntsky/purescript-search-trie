@@ -16,7 +16,8 @@
     "purescript-arrays": "^5.0.0",
     "purescript-ordered-collections": "^1.0.0",
     "purescript-lists": "^5.2.0",
-    "purescript-foldable-traversable": "^4.0.0"
+    "purescript-foldable-traversable": "^4.0.0",
+    "purescript-bifunctors": "^4.0.0"
   },
   "devDependencies": {
     "purescript-assert": "^4.1.0",

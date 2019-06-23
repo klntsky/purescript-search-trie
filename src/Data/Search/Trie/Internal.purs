@@ -39,13 +39,13 @@ import Data.Map (Map)
 import Data.Map as M
 import Data.Maybe (Maybe(..))
 import Data.Maybe as MB
-import Data.Tuple (Tuple(..), snd)
-import Data.Tuple.Nested (over1)
+import Data.Tuple (Tuple(..), snd, uncurry)
+import Data.Bifunctor (lmap, rmap)
 import Data.Unfoldable (class Unfoldable)
 
 data Trie k v =
   Branch (Maybe v) (Map k (Trie k v))
-  -- Length of arc is saved in the structure to speed up lookups.
+  -- `Arc` lengths are saved in the structure to speed up lookups.
   -- `List` was chosen because of better asymptotics of its `drop`
   -- operation, in comparison with `Data.Array.drop`.
   -- The list is always non-empty.
@@ -59,17 +59,13 @@ instance showTrie :: (Show k, Show v) => Show (Trie k v) where
 
 instance semigroupTrie :: Ord k => Semigroup (Trie k v) where
   append a b =
-    foldl (\m (Tuple path v) ->
-            insert path v m) b $ entries a
+    foldl (flip $ uncurry insert) b $ entries a
 
 instance monoidTrie :: Ord k => Monoid (Trie k v) where
   mempty = empty
 
 instance functorTrie :: Ord k => Functor (Trie k) where
-  map f trie =
-    fromList $
-    entriesUnordered trie <#>
-    \(Tuple path v) -> Tuple path (f v)
+  map f trie = fromList $ entriesUnordered trie <#> rmap f
 
 -- | Structural equality.
 eq'
@@ -82,7 +78,7 @@ eq'
 eq' (Branch mbValue1 children1) (Branch mbValue2 children2) =
   if mbValue1 == mbValue2
   then
-    let childrenList1 = M.toUnfoldable children1 :: Array (Tuple k (Trie k v))
+    let childrenList1 = M.toUnfoldable children1
         childrenList2 = M.toUnfoldable children2
     in
      if A.length childrenList1 == A.length childrenList2
@@ -102,27 +98,67 @@ eq' (Arc len1 path1 child1) (Arc len2 path2 child2) =
   len1 == len2 && path1 == path2 && eq' child1 child2
 eq' _ _ = false
 
+-- | A smart constructor to ensure Arc non-emptiness.
+mkArc
+  :: forall k v
+  .  List k
+  -> Trie k v
+  -> Trie k v
+mkArc Nil trie = trie
+mkArc arc trie = Arc (L.length arc) arc trie
+
+empty
+  :: forall k v
+  .  Ord k
+  => Trie k v
+empty = Branch Nothing mempty
+
+isEmpty
+  :: forall k v
+  .  Trie k v
+  -> Boolean
+isEmpty = isEmpty' <<< L.singleton
+  where
+    isEmpty' Nil = true
+    isEmpty' (Branch (Just _) _ : _) = false
+    isEmpty' (Branch _ children : rest)
+      = isEmpty' $
+        (snd <$> M.toUnfoldableUnordered children) <> rest
+    isEmpty' (Arc _ _ child : rest) =
+      isEmpty' (child : rest)
+
+-- | Number of elements in a trie.
+size
+  :: forall k v
+  .  Trie k v
+  -> Int
+size trie = size' (L.singleton trie) 0
+  where
+    size' Nil acc = acc
+    size' (Branch mbValue children : rest) acc =
+      size' ((snd <$> M.toUnfoldableUnordered children) <> rest)
+            (MB.maybe acc (const (acc + 1)) mbValue)
+    size' (Arc _ _ child : rest) acc =
+      size' (child : rest) acc
+
 data Ctx k v = BranchCtx (Maybe v) k (Map k (Trie k v))
              | ArcCtx Int (List k)
 
 data Zipper k v = Zipper (Trie k v) (List (Ctx k v))
 
--- | Delete everything until the first non-empty `Ctx`.
-prune
+mkZipper
+ :: forall k v
+ .  Trie k v
+ -> Zipper k v
+mkZipper trie = Zipper trie Nil
+
+withZipper
   :: forall k v
   .  Ord k
-  => List (Ctx k v)
-  -> Zipper k v
-prune ctxs =
-  case ctxs of
-    Nil -> mkZipper mempty
-    BranchCtx mbValue key children : rest ->
-      let newChildren = M.delete key children in
-      if MB.isJust mbValue || not (M.isEmpty newChildren)
-      then Zipper (Branch mbValue newChildren) rest
-      else prune rest
-    ArcCtx len path : rest ->
-      prune rest
+  => (Zipper k v -> Zipper k v)
+  -> Trie k v
+  -> Trie k v
+withZipper f trie = fromZipper (f (mkZipper trie))
 
 fromZipper
   :: forall k v
@@ -141,113 +177,26 @@ fromZipper (Zipper trie (Cons ctx ctxs)) =
     ArcCtx len path,             _ ->
       fromZipper (Zipper (Arc len path trie) ctxs)
 
-mkZipper
- :: forall k v
- .  Trie k v
- -> Zipper k v
-mkZipper trie = Zipper trie Nil
-
-withZipper
+-- | Delete everything until the first non-empty `Ctx`.
+prune
   :: forall k v
   .  Ord k
-  => (Zipper k v -> Zipper k v)
-  -> Trie k v
-  -> Trie k v
-withZipper f trie = fromZipper (f (mkZipper trie))
-
--- | Insert an entry into a trie.
-insert
-  :: forall k v
-  .  Ord k
-  => List k
-  -> v
-  -> Trie k v
-  -> Trie k v
-insert path value trie =
-  case descend path (mkZipper trie) of
-    { mbValue, children, ctxs } ->
-      fromZipper $ Zipper (Branch (Just value) children) ctxs
-
--- | Update the entry by a given path.
-update
-  :: forall k v
-  .  Ord k
-  => (v -> v)
-  -> List k
-  -> Trie k v
-  -> Trie k v
-update f path trie =
-  case follow path (mkZipper trie) of
-    Just { mbValue, children, ctxs } ->
-      fromZipper $ Zipper (Branch (f <$> mbValue) children) ctxs
-    _ -> trie
-
--- | Delete the entry at a given path.
-delete
-  :: forall k v
-  .  Ord k
-  => List k
-  -> Trie k v
-  -> Trie k v
-delete path trie =
-  case follow path (mkZipper trie) of
-    Just { mbValue, children, ctxs } ->
-      fromZipper $
-      if M.isEmpty children then
-        prune ctxs
-      else
-        Zipper (Branch Nothing children) ctxs
-    _ -> trie
-
--- | Delete all entries by a given path prefix.
-deleteByPrefix
-  :: forall k v
-  .  Ord k
-  => List k
-  -> Trie k v
-  -> Trie k v
-deleteByPrefix path trie =
-  case follow path (mkZipper trie) of
-    Just res ->
-      fromZipper $ prune res.ctxs
-    Nothing -> trie
-
--- | Delete, insert or update the entry by a given path.
--- | It is recommended to use specialized functions for each case, though.
-alter
-  :: forall k v
-  .  Ord k
-  => List k
-  -> (Maybe v -> Maybe v)
-  -> Trie k v
-  -> Trie k v
-alter path =
-  withZipper <<< alter' path
-
-alter'
-  :: forall k v
-  .  Ord k
-  => List k
-  -> (Maybe v -> Maybe v)
+  => List (Ctx k v)
   -> Zipper k v
-  -> Zipper k v
-alter' path f zipper =
-  case descend path zipper of
-    { mbValue, children, ctxs } ->
-      let updatedValue = f mbValue
-          wasDeleted = MB.isJust mbValue &&
-                       MB.isNothing updatedValue &&
-                       M.isEmpty children
-      in if wasDeleted
-         then
-           -- Remove unused branches and arcs from the tree.
-           prune ctxs
-         else Zipper (Branch updatedValue children) ctxs
+prune ctxs =
+  case ctxs of
+    Nil -> mkZipper mempty
+    BranchCtx mbValue key children : rest ->
+      let newChildren = M.delete key children in
+      if MB.isJust mbValue || not (M.isEmpty newChildren)
+      then Zipper (Branch mbValue newChildren) rest
+      else prune rest
+    ArcCtx len path : rest ->
+      prune rest
 
 -- | Follows a given path, constructing new branches as necessary.
 -- | Returns the contents of the last branch with context from which the trie
 -- | can be restored using `fromZipper`.
--- | See also: `follow`
 descend
   :: forall k v
   .  Ord k
@@ -325,71 +274,6 @@ descend = go
             then ctxs
             else ArcCtx outerArcLength outerArc : ctxs
 
--- | A smart constructor to ensure Arc non-emptiness.
-mkArc
-  :: forall k v
-  .  List k
-  -> Trie k v
-  -> Trie k v
-mkArc Nil trie = trie
-mkArc arc trie = Arc (L.length arc) arc trie
-
-empty
-  :: forall k v
-  .  Ord k
-  => Trie k v
-empty = Branch Nothing mempty
-
-isEmpty
-  :: forall k v
-  .  Trie k v
-  -> Boolean
-isEmpty = isEmpty' <<< L.singleton
-  where
-    isEmpty' Nil = true
-    isEmpty' (Branch (Just _) _ : _) = false
-    isEmpty' (Branch _ children : rest)
-      = isEmpty' $
-        (snd <$> M.toUnfoldableUnordered children) <> rest
-    isEmpty' (Arc _ _ child : rest) =
-      isEmpty' (child : rest)
-
-size
-  :: forall k v
-  .  Trie k v
-  -> Int
-size trie = size' (L.singleton trie) 0
-  where
-    size' Nil acc = acc
-    size' (Branch mbValue children : rest) acc =
-      size' ((snd <$> M.toUnfoldableUnordered children) <> rest)
-            (MB.maybe acc (const (acc + 1)) mbValue)
-    size' (Arc _ _ child : rest) acc =
-      size' (child : rest) acc
-
--- | Returns a subtrie containing all paths with given prefix. Path prefixes are not preserved.
--- | Unlike `descend`, this function does not change the trie.
-subtrie
-  :: forall k v
-  .  Ord k
-  => List k
-  -> Trie k v
-  -> Maybe (Trie k v)
-subtrie path (Arc len arc child) =
-  let prefixLength = longestCommonPrefixLength path arc in
-  if prefixLength == len
-  then
-    subtrie (L.drop prefixLength path) child
-  else
-    Just $ mkArc (L.drop prefixLength arc) child
-subtrie path trie@(Branch _ children) =
-  case L.uncons path of
-    Nothing -> Just trie
-    Just { head, tail } ->
-      case M.lookup head children of
-        Just trie' -> subtrie tail trie'
-        Nothing -> Nothing
-
 -- | Follows a given path, but unlike `descend`, fails instead of creating new
 -- | branches.
 follow
@@ -418,18 +302,6 @@ follow path (Zipper (Arc len arc child) ctxs) =
   else
     Nothing
 
-subtrieWithPrefixes
-  :: forall k v
-  .  Ord k
-  => List k
-  -> Trie k v
-  -> Maybe (Trie k v)
-subtrieWithPrefixes path trie =
-  fromFoldable <<<
-  map (over1 (path <> _)) <<<
-  entriesUnordered <$>
-  subtrie path trie
-
 lookup
   :: forall k v
   .  Ord k
@@ -438,6 +310,83 @@ lookup
   -> Maybe v
 lookup path trie =
   follow path (mkZipper trie) >>= _.mbValue
+
+-- | Update the entry at a given path.
+update
+  :: forall k v
+  .  Ord k
+  => (v -> v)
+  -> List k
+  -> Trie k v
+  -> Trie k v
+update f path trie =
+  case follow path (mkZipper trie) of
+    Just { mbValue, children, ctxs } ->
+      fromZipper $ Zipper (Branch (f <$> mbValue) children) ctxs
+    _ -> trie
+
+-- | Delete the entry at a given path.
+delete
+  :: forall k v
+  .  Ord k
+  => List k
+  -> Trie k v
+  -> Trie k v
+delete path trie =
+  case follow path (mkZipper trie) of
+    Just { mbValue, children, ctxs } ->
+      fromZipper $
+      if M.isEmpty children then
+        prune ctxs
+      else
+        Zipper (Branch Nothing children) ctxs
+    _ -> trie
+
+-- | Delete all entries by a given path prefix.
+deleteByPrefix
+  :: forall k v
+  .  Ord k
+  => List k
+  -> Trie k v
+  -> Trie k v
+deleteByPrefix path trie =
+  fromZipper $ prune (descend path (mkZipper trie)).ctxs
+
+-- | Returns a subtrie containing all paths with given prefix. Path prefixes are not saved.
+-- | Unlike `descend`, this function does not change the trie.
+subtrie
+  :: forall k v
+  .  Ord k
+  => List k
+  -> Trie k v
+  -> Maybe (Trie k v)
+subtrie path (Arc len arc child) =
+  let prefixLength = longestCommonPrefixLength path arc in
+  if prefixLength == len
+  then
+    subtrie (L.drop prefixLength path) child
+  else
+    Just $ mkArc (L.drop prefixLength arc) child
+subtrie path trie@(Branch _ children) =
+  case L.uncons path of
+    Nothing -> Just trie
+    Just { head, tail } ->
+      case M.lookup head children of
+        Just trie' -> subtrie tail trie'
+        Nothing -> Nothing
+
+-- | A version of `subtrie` that does not cut the prefixes.
+subtrieWithPrefixes
+  :: forall k v
+  .  Ord k
+  => List k
+  -> Trie k v
+  -> Maybe (Trie k v)
+subtrieWithPrefixes path trie =
+  fromFoldable <<<
+  map (lmap (path <> _)) <<<
+  entriesUnordered <$>
+  subtrie path trie
 
 query
   :: forall k v
@@ -457,13 +406,58 @@ queryValues
 queryValues path =
   values <<< MB.fromMaybe mempty <<< subtrie path
 
+-- | Insert an entry into a trie.
+insert
+  :: forall k v
+  .  Ord k
+  => List k
+  -> v
+  -> Trie k v
+  -> Trie k v
+insert path value trie =
+  case descend path (mkZipper trie) of
+    { mbValue, children, ctxs } ->
+      fromZipper $ Zipper (Branch (Just value) children) ctxs
+
+-- | Delete, insert or update the entry by a given path.
+-- | It is recommended to use specialized functions for each case.
+alter
+  :: forall k v
+  .  Ord k
+  => List k
+  -> (Maybe v -> Maybe v)
+  -> Trie k v
+  -> Trie k v
+alter path =
+  withZipper <<< alter' path
+
+alter'
+  :: forall k v
+  .  Ord k
+  => List k
+  -> (Maybe v -> Maybe v)
+  -> Zipper k v
+  -> Zipper k v
+alter' path f zipper =
+  case descend path zipper of
+    { mbValue, children, ctxs } ->
+      let updatedValue = f mbValue
+          wasDeleted = MB.isJust mbValue &&
+                       MB.isNothing updatedValue &&
+                       M.isEmpty children
+      in if wasDeleted
+         then
+           -- Remove unused branches and arcs from the tree.
+           prune ctxs
+         else Zipper (Branch updatedValue children) ctxs
+
 fromList
  :: forall k v
  .  Ord k
  => List (Tuple (List k) v)
  -> Trie k v
 fromList =
-  foldl (\m (Tuple path v) -> insert path v m) empty
+  foldl (flip (uncurry insert)) empty
 
 fromFoldable
  :: forall f p k v
@@ -473,7 +467,7 @@ fromFoldable
  => f (Tuple (p k) v)
  -> Trie k v
 fromFoldable =
-  foldl (\m (Tuple path v) -> insert (L.fromFoldable path) v m) empty
+  foldl (flip (lmap L.fromFoldable >>> uncurry insert)) empty
 
 -- | Resulting List will be sorted.
 entries
@@ -498,7 +492,7 @@ entriesWith
   -> List (Tuple (List k) v)
 entriesWith mapToUnfoldable trie =
   L.reverse $
-  over1 (L.concat <<< L.reverse) <$>
+  lmap (L.concat <<< L.reverse) <$>
   go (L.singleton $ Tuple trie Nil) Nil
   where
     go :: List (Tuple (Trie k v) (List (List k)))
@@ -525,7 +519,7 @@ toUnfoldable
   => Trie k v
   -> f (Tuple (p k) v)
 toUnfoldable trie =
-  L.toUnfoldable (entries trie <#> over1 L.toUnfoldable)
+  L.toUnfoldable (entries trie <#> lmap L.toUnfoldable)
 
 values
   :: forall k v

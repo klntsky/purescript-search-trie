@@ -353,27 +353,25 @@ deleteByPrefix path trie =
   fromZipper $ prune (descend path (mkZipper trie)).ctxs
 
 -- | Returns a subtrie containing all paths with given prefix. Path prefixes are not saved.
--- | Unlike `descend`, this function does not change the trie.
 subtrie
   :: forall k v
   .  Ord k
   => List k
   -> Trie k v
   -> Maybe (Trie k v)
+subtrie Nil trie = Just trie
 subtrie path (Arc len arc child) =
   let prefixLength = longestCommonPrefixLength path arc in
-  if prefixLength == len
-  then
-    subtrie (L.drop prefixLength path) child
-  else
-    Just $ mkArc (L.drop prefixLength arc) child
-subtrie path trie@(Branch _ children) =
-  case L.uncons path of
-    Nothing -> Just trie
-    Just { head, tail } ->
-      case M.lookup head children of
-        Just trie' -> subtrie tail trie'
-        Nothing -> Nothing
+  if prefixLength == 0
+  then Nothing
+  else subtrie (L.drop prefixLength path)
+       if prefixLength == len
+       then child
+       else mkArc (L.drop prefixLength arc) child
+subtrie (head : tail) trie@(Branch _ children) =
+  case M.lookup head children of
+    Just trie' -> subtrie tail trie'
+    Nothing -> Nothing
 
 -- | A version of `subtrie` that does not cut the prefixes.
 subtrieWithPrefixes

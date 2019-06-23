@@ -292,6 +292,55 @@ testQuery = do
       query (l [1]) trie
     }
 
+  assertEqual' "query #3" $
+    let trie = fromFoldable $
+               [ t [1,2,3,4,5] 4
+               ] in
+    { expected: mempty
+    , actual:
+      query (l [1,2,3,4,5,6]) trie
+    }
+
+  assertEqual' "query #4"
+    { expected: mempty
+    , actual:
+      query (L.fromFoldable $ toCharArray "qooooo") $
+      fromFoldable $
+      ((\x -> Tuple (toCharArray x) x) <$>
+      [ "query"
+      , "query"
+      , "queryAll"
+      , "querySelector"
+      , "querySelectorAll"
+      , "queryValues"
+      ])
+    }
+
+  assertEqual' "query #5"
+    { expected: mempty
+    , actual:
+      query (L.fromFoldable $ toCharArray "queryyyy") $
+      fromFoldable $
+      ((\x -> Tuple (toCharArray x) x) <$>
+      [ "query"
+      , "query"
+      , "queryAll"
+      , "querySelector"
+      , "querySelectorAll"
+      , "queryValues"
+      ])
+    }
+
+  assertEqual' "query #6"
+    { expected: mempty
+    , actual:
+      query (L.fromFoldable $ toCharArray "queueueuuuioeiioieuiuriu") $
+      fromFoldable $
+      ((\x -> Tuple (toCharArray x) x) <$>
+      [ "queueOrRun"
+      ])
+    }
+
   assertEqual' "queryValues #0" $
     let trie = fromFoldable $
                [ t [1,2,3] 1
@@ -302,6 +351,7 @@ testQuery = do
     , actual:
       queryValues (l [1]) trie
     }
+
 
 testDelete :: Effect Unit
 testDelete = do

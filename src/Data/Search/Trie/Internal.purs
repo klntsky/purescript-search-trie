@@ -67,7 +67,7 @@ instance monoidTrie :: Ord k => Monoid (Trie k v) where
 instance functorTrie :: Ord k => Functor (Trie k) where
   map f trie = fromList $ entriesUnordered trie <#> rmap f
 
--- | Structural equality.
+-- | Check that two tries are not only equal, but also have the same internal structure.
 eq'
   :: forall k v
   .  Eq k
@@ -132,14 +132,14 @@ size
   :: forall k v
   .  Trie k v
   -> Int
-size trie = size' (L.singleton trie) 0
+size = go 0 <<< L.singleton
   where
-    size' Nil acc = acc
-    size' (Branch mbValue children : rest) acc =
-      size' ((snd <$> M.toUnfoldableUnordered children) <> rest)
-            (MB.maybe acc (const (acc + 1)) mbValue)
-    size' (Arc _ _ child : rest) acc =
-      size' (child : rest) acc
+    go acc Nil = acc
+    go acc (Branch mbValue children : rest) =
+      go (MB.maybe acc (const (acc + 1)) mbValue)
+         ((snd <$> M.toUnfoldableUnordered children) <> rest)
+    go acc (Arc _ _ child : rest) =
+      go acc (child : rest)
 
 data Ctx k v = BranchCtx (Maybe v) k (Map k (Trie k v))
              | ArcCtx Int (List k)
@@ -165,19 +165,19 @@ fromZipper
   .  Ord k
   => Zipper k v
   -> Trie k v
-fromZipper (Zipper trie Nil) = trie
 fromZipper (Zipper trie (Cons ctx ctxs)) =
   case ctx, trie of
     BranchCtx mbValue key other, _ ->
       fromZipper (Zipper (Branch mbValue $ M.insert key trie other) ctxs)
 
-    ArcCtx len path,             Arc len' path' child ->
-      fromZipper (Zipper (Arc (len + len') (path <> path') child) ctxs)
+    ArcCtx len1 path1,           Arc len2 path2 child ->
+      fromZipper (Zipper (Arc (len1 + len2) (path1 <> path2) child) ctxs)
 
     ArcCtx len path,             _ ->
       fromZipper (Zipper (Arc len path trie) ctxs)
+fromZipper (Zipper trie Nil) = trie
 
--- | Delete everything until the first non-empty `Ctx`.
+-- | Delete everything until the first non-empty context.
 prune
   :: forall k v
   .  Ord k
@@ -185,7 +185,6 @@ prune
   -> Zipper k v
 prune ctxs =
   case ctxs of
-    Nil -> mkZipper mempty
     BranchCtx mbValue key children : rest ->
       let newChildren = M.delete key children in
       if MB.isJust mbValue || not (M.isEmpty newChildren)
@@ -193,6 +192,7 @@ prune ctxs =
       else prune rest
     ArcCtx len path : rest ->
       prune rest
+    Nil -> mkZipper mempty
 
 -- | Follows a given path, constructing new branches as necessary.
 -- | Returns the contents of the last branch with context from which the trie
@@ -206,73 +206,65 @@ descend
      , children :: Map k (Trie k v)
      , ctxs :: List (Ctx k v)
      }
-descend = go
-  where
-    go Nil (Zipper (Branch mbValue children) ctxs) =
+descend Nil (Zipper (Branch mbValue children) ctxs) =
       { mbValue, children, ctxs }
-
-    go (head : tail) (Zipper (Branch mbOldValue children) ctxs) =
-      case M.lookup head children of
-        Just child ->
-          go tail $
-          Zipper child (BranchCtx mbOldValue head children : ctxs)
-        Nothing ->
-          -- Create a new empty trie, place it at the end of a new arc.
-          let branchCtxs = BranchCtx mbOldValue head children : ctxs in
-            { mbValue: Nothing
-            , children: mempty
-            , ctxs:
-              if L.null tail
-              then branchCtxs
-              else ArcCtx (L.length tail) tail : branchCtxs
-            }
-
-    go path (Zipper (Arc len arc child) ctxs) =
-      let prefixLength = longestCommonPrefixLength path arc in
-      if prefixLength == len
-      then
-        let newPath = L.drop prefixLength path in
-        go newPath $
-        Zipper child (ArcCtx len arc : ctxs)
-      else
-        if prefixLength == 0 then
-          -- Replace `Arc` with a `Branch`.
-          case L.uncons arc of
-            Just { head, tail } ->
-              -- We want to avoid `L.length` call on `tail`: at this point
-              -- the length can be calculated.
-              let len' = len - 1
-                  children = M.singleton head $
-                             if len' > 0
-                             then Arc len' tail child
-                             else child
-              in
-                go path $
-                Zipper (Branch Nothing children) ctxs
-            Nothing ->
-              -- Impossible: `arc` is always non-empty
-              { mbValue: Nothing
-              , children: mempty
-              , ctxs
-              }
-        else
-          let
-            outerArc = L.take prefixLength path
-            newPath  = L.drop prefixLength path
-            -- `innerArc` is always non-empty, because
-            -- `prefixLength == L.length arc` is false in this branch.
-            -- `prefixLength <= L.length arc` is true because `prefixLength` is
-            -- a length of some prefix of `arc`.
-            -- Thus `prefixLength < L.length arc`.
-            innerArc = L.drop prefixLength arc
-            innerArcLength = len - prefixLength
-            outerArcLength = L.length outerArc
+descend (head : tail) (Zipper (Branch mbOldValue children) ctxs) =
+  case M.lookup head children of
+    Just child ->
+      descend tail $
+      Zipper child (BranchCtx mbOldValue head children : ctxs)
+    Nothing -> { mbValue: Nothing, children: mempty, ctxs: ctxs' }
+      where
+        -- Create a new empty trie, place it at the end of a new arc.
+        branchCtxs = BranchCtx mbOldValue head children : ctxs
+        ctxs' = if L.null tail then branchCtxs
+                else ArcCtx (L.length tail) tail : branchCtxs
+descend path (Zipper (Arc len arc child) ctxs) =
+  let prefixLength = longestCommonPrefixLength path arc in
+  if prefixLength == len
+  then
+    let newPath = L.drop prefixLength path in
+    descend newPath $
+    Zipper child (ArcCtx len arc : ctxs)
+  else
+    if prefixLength == 0 then
+      -- Replace `Arc` with a `Branch`.
+      case L.uncons arc of
+        Just { head, tail } ->
+          -- We want to avoid `L.length` call on `tail`: at this point
+          -- the length can be calculated.
+          let len' = len - 1
+              children = M.singleton head $
+                         if len' > 0
+                         then Arc len' tail child
+                         else child
           in
-            go newPath $
-            Zipper (Arc innerArcLength innerArc child)
-            if outerArcLength == 0
-            then ctxs
-            else ArcCtx outerArcLength outerArc : ctxs
+            descend path $
+            Zipper (Branch Nothing children) ctxs
+        Nothing ->
+          -- Impossible: `arc` is always non-empty
+          { mbValue: Nothing
+          , children: mempty
+          , ctxs
+          }
+    else
+      let
+        outerArc = L.take prefixLength path
+        newPath  = L.drop prefixLength path
+        -- `innerArc` is always non-empty, because
+        -- `prefixLength == L.length arc` is false in this branch.
+        -- `prefixLength <= L.length arc` is true because `prefixLength` is
+        -- a length of some prefix of `arc`.
+        -- Thus `prefixLength < L.length arc`.
+        innerArc = L.drop prefixLength arc
+        innerArcLength = len - prefixLength
+        outerArcLength = L.length outerArc
+      in
+        descend newPath $
+        Zipper (Arc innerArcLength innerArc child)
+        if outerArcLength == 0
+        then ctxs
+        else ArcCtx outerArcLength outerArc : ctxs
 
 -- | Follows a given path, but unlike `descend`, fails instead of creating new
 -- | branches.

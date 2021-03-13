@@ -464,7 +464,7 @@ testDelete = do
     }
 
   assertEqual' "delete #6: value"
-    { expected: Branch Nothing mempty
+    { expected: Branch Nothing M.empty
     , actual: trie7
     }
 
@@ -834,7 +834,7 @@ branch :: forall a b c. Ord b => Foldable c => c (Tuple b (Trie b a)) -> Trie b 
 branch lst = Branch Nothing (M.fromFoldable lst)
 
 single :: forall b a. Ord a => b -> Trie a b
-single x = Branch (Just x) mempty
+single x = Branch (Just x) M.empty
 
 arc :: forall a b c. Foldable a => a c -> Trie c b -> Trie c b
 arc lst = let lst' = l lst in

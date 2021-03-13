@@ -111,7 +111,7 @@ empty
   :: forall k v
   .  Ord k
   => Trie k v
-empty = Branch Nothing mempty
+empty = Branch Nothing M.empty
 
 isEmpty
   :: forall k v
@@ -213,7 +213,7 @@ descend (head : tail) (Zipper (Branch mbOldValue children) ctxs) =
     Just child ->
       descend tail $
       Zipper child (BranchCtx mbOldValue head children : ctxs)
-    Nothing -> { mbValue: Nothing, children: mempty, ctxs: ctxs' }
+    Nothing -> { mbValue: Nothing, children: M.empty, ctxs: ctxs' }
       where
         -- Create a new empty trie, place it at the end of a new arc.
         branchCtxs = BranchCtx mbOldValue head children : ctxs
@@ -244,7 +244,7 @@ descend path (Zipper (Arc len arc child) ctxs) =
         Nothing ->
           -- Impossible: `arc` is always non-empty
           { mbValue: Nothing
-          , children: mempty
+          , children: M.empty
           , ctxs
           }
     else

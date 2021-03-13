@@ -14,6 +14,3 @@ install: |
   bower install
 script:
   - pulp test
-  - RESOLUTIONS=$(mktemp) &&
-      bower list --json --offline > $RESOLUTIONS &&
-      purs publish --dry-run --manifest bower.json --resolutions $RESOLUTIONS

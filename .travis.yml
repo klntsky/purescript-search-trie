@@ -14,4 +14,4 @@ install: |
   spago upgrade-set
   spago build
 script:
-  - pulp test
+  - spago test
